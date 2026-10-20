@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spot Seeding Sync</title>
+<style>
+  :root {
+    --bg: #f4f4f1; --panel: #ffffff; --ink: #1d1f1c; --muted: #6b6f68; --line: #dcdcd6;
+    --accent: #2f7d4a; --warn: #b4492f; --off: #9a9c9e; --scene: #e9eae5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161816; --panel: #1f221f; --ink: #e8eae5; --muted: #9a9f97; --line: #343833;
+            --accent: #5cbf7c; --warn: #e07a5f; --off: #5b5e5b; --scene: #1a1c1a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--ink);
+         display: grid; grid-template-columns: 1fr 320px; min-height: 100vh; }
+  main { background: var(--scene); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; gap: 12px; }
+  #frame { width: 100%; max-width: 1080px; aspect-ratio: 3 / 2; object-fit: contain; border-radius: 8px; background: #fff; }
+  #bar { width: 100%; max-width: 1080px; height: 34px; cursor: pointer; border-radius: 6px; display: block; }
+  aside { background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow-y: auto; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+  button { font: inherit; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .row label { flex: 1; color: var(--muted); }
+  input[type=number], select { width: 80px; font: inherit; padding: 4px 6px; border-radius: 5px;
+           border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  #state { border-radius: 10px; padding: 14px; color: #fff; background: var(--off); text-align: center; margin-top: 8px; }
+  #state b { font-size: 22px; display: block; }
+  #state.on { background: var(--accent); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .stat { background: var(--bg); border-radius: 6px; padding: 8px; }
+  .stat small { color: var(--muted); display: block; }
+  .stat b { font-size: 17px; font-variant-numeric: tabular-nums; }
+  #conn { font-size: 13px; color: var(--muted); } #conn.on { color: var(--accent); }
+  #log { font: 12px ui-monospace, monospace; height: 70px; overflow-y: auto; background: var(--bg);
+         border-radius: 6px; padding: 6px; white-space: pre-wrap; color: var(--muted); }
+  a { color: var(--accent); }
+  @media (max-width: 760px) { body { grid-template-columns: 1fr; } aside { border-left: 0; } }
+</style>
+</head>
+<body>
+<main>
+  <img id="frame" alt="Overseeder with Cambridge roll, spot seeding animation">
+  <canvas id="bar" title="Click to jump. Green = seeder motor on"></canvas>
+</main>
+<aside>
+  <h1>Spot seeding → real motor</h1>
+  <p class="sub">The overseeder animation plays in real time. Whenever its seeder motor is on, the TT motor runs. <a href="index.html">Manual control</a></p>
+  <div class="row">
+    <button id="connect" class="primary">Connect ESP32</button>
+    <span id="conn">not connected</span>
+  </div>
+
+  <h2>Playback</h2>
+  <div class="row">
+    <button id="play" class="primary">▶ Play</button>
+    <button id="restart">⟲ Restart</button>
+  </div>
+  <div class="row"><label>Speed</label>
+    <select id="rate"><option value="0.5">0.5 ×</option><option value="1" selected>1 × (real time)</option><option value="2">2 ×</option></select></div>
+  <div class="row"><label>Loop (keep driving passes)</label><input id="loop" type="checkbox" checked></div>
+
+  <div id="state"><b>SEEDER OFF</b><span id="stateSub">–</span></div>
+  <div class="stats">
+    <div class="stat"><small>Time</small><b id="t">0.0 s</b></div>
+    <div class="stat"><small>Robot speed</small><b id="v">0.00 m/s</b></div>
+    <div class="stat"><small>Mini roller</small><b id="mrpm">0 rpm</b></div>
+    <div class="stat"><small>Duty sent</small><b id="duty">0 %</b></div>
+    <div class="stat"><small>Duty on ESP32</small><b id="actual">–</b></div>
+    <div class="stat"><small>Switch-ons</small><b id="ons">0</b></div>
+  </div>
+
+  <h2>Mini hopper</h2>
+  <div class="row"><label>Mini roller rpm at 0.5 m/s</label><input id="rpmNom" type="number" value="28" min="1" step="1"></div>
+  <div class="row"><label>TT rpm at 100 % (measured)</label><input id="rpmMax" type="number" value="200" min="1" step="5"></div>
+  <div class="row"><label>Dead band (%)</label><input id="dead" type="number" value="15" min="0" max="90"></div>
+  <div class="row"><label>L298N channel</label>
+    <select id="channel"><option value="A">A</option><option value="B">B</option></select></div>
+  <div class="row"><label>Reverse motor direction</label><input id="invert" type="checkbox"></div>
+
+  <h2>Serial</h2>
+  <div id="log"></div>
+</aside>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const log = (s) => { const l = $("log"); l.textContent = (l.textContent + s + "\n").split("\n").slice(-30).join("\n"); l.scrollTop = 1e9; };
+
+// ---------- settings remembered in this browser ----------
+const KEEP = ["rpmNom", "rpmMax", "dead", "channel", "invert", "rate", "loop"];
+try {
+  const saved = JSON.parse(localStorage.getItem("seedingSync") || "{}");
+  for (const k of KEEP) if (k in saved) $(k)[$(k).type === "checkbox" ? "checked" : "value"] = saved[k];
+} catch (e) {}
+function remember() {
+  try { localStorage.setItem("seedingSync", JSON.stringify(Object.fromEntries(KEEP.map((k) => [k, $(k).type === "checkbox" ? $(k).checked : $(k).value])))); } catch (e) {}
+}
+KEEP.forEach((k) => $(k).addEventListener("change", remember));
+
+// ---------- serial (same protocol as index.html, see firmware/tt_motor) ----------
+let port = null, writer = null, duty = 0;
+async function send(cmd) {
+  if (!writer) return;
+  try { await writer.write(new TextEncoder().encode(cmd + "\n")); } catch (e) { log("write failed: " + e.message); }
+}
+const sendSpeed = () => send("S " + (duty * ($("invert").checked ? -1 : 1)).toFixed(0));
+async function sendSetup() {
+  await send("C " + $("channel").value);
+  await send("R 1000");       // fast ramp: the animation already includes the motor start time
+  await send("K 60");
+  await sendSpeed();
+}
+$("channel").onchange = sendSetup;
+$("invert").onchange = sendSpeed;
+
+async function readLoop() {
+  const reader = port.readable.getReader();
+  let buf = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += new TextDecoder().decode(value);
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (line.startsWith("T ")) $("actual").textContent = Math.abs(parseFloat(line.split(" ")[2])).toFixed(0) + " %";
+        else if (line) log(line);
+      }
+    }
+  } catch (e) { log("read: " + e.message); }
+  finally { reader.releaseLock(); }
+}
+
+$("connect").onclick = async () => {
+  if (!("serial" in navigator)) { alert("Web Serial is not available: use Chrome or Edge via http://localhost."); return; }
+  if (port) return disconnect();
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    $("conn").textContent = "connected"; $("conn").className = "on"; $("connect").textContent = "Disconnect";
+    readLoop().then(() => { if (port) disconnect(); });
+    setTimeout(sendSetup, 1500);   // the ESP32 resets when the port opens
+  } catch (e) { log("connect: " + e.message); port = null; }
+};
+async function disconnect() {
+  try { await send("X"); writer.releaseLock(); await port.close(); } catch (e) {}
+  port = null; writer = null;
+  $("conn").textContent = "not connected"; $("conn").className = ""; $("connect").textContent = "Connect ESP32";
+  $("actual").textContent = "–";
+}
+setInterval(() => { if (writer) sendSpeed(); }, 300);          // heartbeat for the ESP32 watchdog
+window.addEventListener("beforeunload", () => send("X"));
+
+// ---------- animation ----------
+const tl = await (await fetch("seeding/timeline.json")).json();
+const F = tl.frames, N = F.length, FPS = tl.fps;
+const imgs = F.map((_, i) => { const im = new Image(); im.src = `seeding/frames/frame_${String(i).padStart(4, "0")}.jpg`; return im; });
+
+let pos = 0, playing = false, last = performance.now(), shown = -1, ons = 0;
+
+// mini roller rpm follows the robot speed, as the real controller does; duty from the measured TT curve
+function dutyFor(m) {
+  if (!m.motor) return 0;
+  const rpm = +$("rpmNom").value * Math.max(m.v, 50) / 500;
+  const dead = +$("dead").value;
+  return Math.min(100, dead + rpm / +$("rpmMax").value * (100 - dead));
+}
+
+function show(i) {
+  const m = F[i];
+  if (i !== shown) {
+    if (shown >= 0 && m.motor && !F[shown].motor && i === shown + 1) $("ons").textContent = ++ons;
+    $("frame").src = imgs[i].src;
+    shown = i;
+  }
+  duty = playing ? dutyFor(m) : 0;
+  const rpm = m.motor ? +$("rpmNom").value * Math.max(m.v, 50) / 500 : 0;
+  $("state").className = m.motor ? "on" : "";
+  $("state").querySelector("b").textContent = m.motor ? "SEEDER ON" : "SEEDER OFF";
+  $("stateSub").textContent = m.flow ? `seed falling · ${m.ahead} bare cells ahead` : m.motor ? "motor starting / stopping" : m.phase;
+  $("t").textContent = m.t.toFixed(1) + " s";
+  $("v").textContent = (m.v / 1000).toFixed(2) + " m/s";
+  $("mrpm").textContent = rpm.toFixed(1) + " rpm";
+  $("duty").textContent = duty.toFixed(0) + " %";
+  drawBar();
+}
+
+function drawBar() {
+  const c = $("bar"), r = c.getBoundingClientRect(), dpr = devicePixelRatio;
+  c.width = r.width * dpr; c.height = r.height * dpr;
+  const g = c.getContext("2d"), w = c.width, h = c.height, cs = getComputedStyle(document.documentElement);
+  g.fillStyle = cs.getPropertyValue("--line"); g.fillRect(0, 0, w, h);
+  g.fillStyle = cs.getPropertyValue("--accent");
+  F.forEach((m, i) => { if (m.motor) g.fillRect(i / N * w, 0, Math.ceil(w / N) + 1, h); });
+  g.fillStyle = cs.getPropertyValue("--ink");
+  g.fillRect(pos / N * w - dpr, 0, 2 * dpr, h);
+}
+
+$("bar").onclick = (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  pos = Math.floor((e.clientX - r.left) / r.width * N); ons = 0; $("ons").textContent = 0; show(pos);
+};
+$("play").onclick = () => {
+  playing = !playing; last = performance.now();
+  $("play").textContent = playing ? "❚❚ Pause" : "▶ Play";
+  if (!playing) { duty = 0; send("X"); }
+  show(Math.floor(pos));
+};
+$("restart").onclick = () => { pos = 0; ons = 0; $("ons").textContent = 0; show(0); };
+document.addEventListener("keydown", (e) => { if (e.code === "Space") { e.preventDefault(); $("play").onclick(); } });
+
+function tick(now) {
+  if (playing) {
+    pos += (now - last) / 1000 * FPS * +$("rate").value;
+    if (pos >= N) {
+      if ($("loop").checked) pos %= N;
+      else { pos = N - 1; $("play").onclick(); }
+    }
+    const i = Math.floor(pos);
+    const before = duty;
+    show(i);
+    if (duty !== before) sendSpeed();
+  }
+  last = now;
+  requestAnimationFrame(tick);
+}
+// seeding.html#t=11.3 opens the animation at that time
+const startT = parseFloat((location.hash.match(/t=([\d.]+)/) || [])[1]);
+if (startT > 0) pos = Math.max(0, F.findIndex((m) => m.t >= startT));
+show(Math.floor(pos));
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

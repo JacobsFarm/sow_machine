@@ -1,0 +1,8 @@
+Esp32 board to L298N Motor Driver Board 
+102 to in 1
+1014 to in 2
+1015 to in 3
+1013 to in 4
+
+GND to GND
+5v to 5v

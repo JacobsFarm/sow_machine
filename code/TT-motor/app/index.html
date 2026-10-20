@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TT Motor Control</title>
+<style>
+  :root {
+    --bg: #f4f4f1; --panel: #ffffff; --ink: #1d1f1c; --muted: #6b6f68; --line: #dcdcd6;
+    --accent: #2f7d4a; --warn: #b4492f; --scene: #e9eae5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161816; --panel: #1f221f; --ink: #e8eae5; --muted: #9a9f97; --line: #343833;
+            --accent: #5cbf7c; --warn: #e07a5f; --scene: #1a1c1a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--ink);
+         display: grid; grid-template-columns: 340px 1fr; height: 100vh; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; overflow-y: auto; }
+  main { position: relative; background: var(--scene); }
+  #view { width: 100%; height: 100%; display: block; }
+  h1 { font-size: 17px; margin: 0 0 12px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+  button { font: inherit; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--warn); border-color: var(--warn); color: #fff; width: 100%; padding: 12px; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .row label { flex: 1; color: var(--muted); }
+  input[type=number], select { width: 90px; font: inherit; padding: 4px 6px; border-radius: 5px;
+           border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  input[type=range] { width: 100%; }
+  .big { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { background: var(--bg); border-radius: 6px; padding: 8px; }
+  .stat small { color: var(--muted); display: block; }
+  .stat b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  #conn { font-size: 13px; color: var(--muted); }
+  #conn.on { color: var(--accent); }
+  #log { font: 12px ui-monospace, monospace; height: 90px; overflow-y: auto; background: var(--bg);
+         border-radius: 6px; padding: 6px; white-space: pre-wrap; color: var(--muted); }
+  .hint { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px; }
+  @media (max-width: 760px) { body { grid-template-columns: 1fr; grid-template-rows: auto 50vh; height: auto; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<aside>
+  <h1>TT motor · mini seed hopper</h1>
+  <p style="margin:-6px 0 12px;font-size:13px"><a href="seeding.html" style="color:var(--accent)">Spot seeding sync →</a></p>
+  <div class="row">
+    <button id="connect" class="primary">Connect ESP32</button>
+    <span id="conn">not connected</span>
+  </div>
+
+  <h2>Speed</h2>
+  <div class="big"><span id="speedVal">0</span> %</div>
+  <input id="speed" type="range" min="-100" max="100" step="1" value="0">
+  <div class="row">
+    <button data-set="-50">−50</button><button data-set="-25">−25</button>
+    <button data-set="0">0</button><button data-set="25">+25</button><button data-set="50">+50</button><button data-set="100">+100</button>
+  </div>
+  <button id="stop" class="stop">STOP (space)</button>
+
+  <div class="stats" style="margin-top:12px">
+    <div class="stat"><small>Duty on ESP32</small><b id="actual">–</b></div>
+    <div class="stat"><small>Roller speed (est.)</small><b id="rpm">0 rpm</b></div>
+    <div class="stat"><small>Seed flow (est.)</small><b id="gmin">0 g/min</b></div>
+    <div class="stat"><small>Revolutions</small><b id="revs">0.0</b></div>
+  </div>
+  <div class="row"><button id="resetRevs">Reset count</button></div>
+
+  <h2>Setup</h2>
+  <div class="row"><label>Motor on L298N channel</label>
+    <select id="channel"><option value="A">A (IN1/IN2)</option><option value="B">B (IN3/IN4)</option></select></div>
+  <div class="row"><label>Reverse motor direction</label><input id="invert" type="checkbox"></div>
+  <div class="row"><label>Ramp (%/s, 0 = off)</label><input id="ramp" type="number" value="200" min="0" step="50"></div>
+  <div class="row"><label>Start kick (ms)</label><input id="kick" type="number" value="60" min="0" step="10"></div>
+
+  <h2>Model</h2>
+  <div class="row"><label>Roller</label>
+    <select id="roller">
+      <option value="D">D</option><option value="E">E</option><option value="F" selected>F (default)</option>
+      <option value="G">G</option><option value="H">H</option><option value="I">I</option>
+    </select></div>
+  <div class="row"><label>rpm at 100 % (measure!)</label><input id="rpmMax" type="number" value="200" min="1" step="5"></div>
+  <div class="row"><label>Dead band (% where it starts)</label><input id="dead" type="number" value="15" min="0" max="90" step="1"></div>
+  <div class="row"><label>Cut-away view</label><input id="cut" type="checkbox" checked></div>
+  <div class="row"><label>Show hopper body</label><input id="showBody" type="checkbox" checked></div>
+
+  <h2>Serial</h2>
+  <div id="log"></div>
+</aside>
+<main>
+  <canvas id="view"></canvas>
+  <div class="hint">Drag to orbit · scroll to zoom · + speed = top of the roller moves forward (towards the rim)</div>
+</main>
+
+<script type="module">
+import * as THREE from "three";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const $ = (id) => document.getElementById(id);
+
+// g per revolution from CAD_design/TT-motor/README.md (35 g/m2, 0.35 kg/l)
+const G_PER_REV = { D: 4.3, E: 4.1, F: 3.0, G: 2.6, H: 1.5, I: 3.0 };
+
+// ---------- serial ----------
+let port = null, writer = null, actualDuty = 0, target = 0;
+const log = (s) => { const l = $("log"); l.textContent = (l.textContent + s + "\n").split("\n").slice(-40).join("\n"); l.scrollTop = 1e9; };
+
+async function send(cmd) {
+  if (!writer) return;
+  try { await writer.write(new TextEncoder().encode(cmd + "\n")); } catch (e) { log("write failed: " + e.message); }
+}
+const motorSign = () => ($("invert").checked ? -1 : 1);
+const sendSpeed = () => send("S " + (target * motorSign()).toFixed(0));
+const sendSetup = async () => {
+  await send("C " + $("channel").value);
+  await send("R " + $("ramp").value);
+  await send("K " + $("kick").value);
+  await sendSpeed();
+};
+
+async function readLoop() {
+  const reader = port.readable.getReader();
+  let buf = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += new TextDecoder().decode(value);
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (line.startsWith("T ")) {
+          actualDuty = parseFloat(line.split(" ")[2]) * motorSign();
+          $("actual").textContent = actualDuty.toFixed(0) + " %";
+        } else if (line) log(line);
+      }
+    }
+  } catch (e) { log("read: " + e.message); }
+  finally { reader.releaseLock(); }
+}
+
+$("connect").onclick = async () => {
+  if (!("serial" in navigator)) { alert("Web Serial is not available: use Chrome or Edge via http://localhost."); return; }
+  if (port) { await disconnect(); return; }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    $("conn").textContent = "connected"; $("conn").className = "on"; $("connect").textContent = "Disconnect";
+    log("port open");
+    readLoop().then(() => { if (port) disconnect(); });
+    setTimeout(sendSetup, 1500);   // the ESP32 resets when the port opens
+  } catch (e) { log("connect: " + e.message); port = null; }
+};
+
+async function disconnect() {
+  try { await send("X"); writer.releaseLock(); await port.close(); } catch (e) {}
+  port = null; writer = null; actualDuty = 0;
+  $("conn").textContent = "not connected"; $("conn").className = ""; $("connect").textContent = "Connect ESP32";
+  $("actual").textContent = "–";
+}
+
+// heartbeat: resend the speed every 300 ms (the ESP32 stops after 1.5 s without a line)
+setInterval(() => { if (writer) sendSpeed(); }, 300);
+
+function setTarget(v) {
+  target = Math.max(-100, Math.min(100, Math.round(v)));
+  $("speed").value = target; $("speedVal").textContent = (target > 0 ? "+" : "") + target;
+  sendSpeed();
+}
+$("speed").oninput = (e) => setTarget(+e.target.value);
+document.querySelectorAll("[data-set]").forEach((b) => (b.onclick = () => setTarget(+b.dataset.set)));
+$("stop").onclick = () => { setTarget(0); send("X"); };
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
+  if (e.code === "Space") { e.preventDefault(); $("stop").onclick(); }
+  if (e.code === "ArrowUp") { e.preventDefault(); setTarget(target + 5); }
+  if (e.code === "ArrowDown") { e.preventDefault(); setTarget(target - 5); }
+});
+["channel", "ramp", "kick"].forEach((id) => ($(id).onchange = sendSetup));
+$("invert").onchange = sendSpeed;
+window.addEventListener("beforeunload", () => send("X"));
+
+// ---------- 3D view (frame from the CAD: x along the roller, y forward, z up, origin = roller axis) ----------
+const canvas = $("view");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.localClippingEnabled = true;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 1, 5000);
+camera.up.set(0, 0, 1);
+camera.position.set(260, -230, 170);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(10, 0, 20);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(200, -300, 400); scene.add(sun);
+
+const clip = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);   // cut-away: hide the back half (y < 0), the camera side
+const loader = new STLLoader();
+const mat = (color, opts = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05, side: THREE.DoubleSide, ...opts });
+const parts = {};
+
+function load(name, material, parent = scene) {
+  return new Promise((resolve) => loader.load(`models/${name}.stl`, (geo) => {
+    geo.computeVertexNormals();
+    const m = new THREE.Mesh(geo, material); parent.add(m); resolve(m);
+  }, undefined, () => { log("missing model " + name); resolve(null); }));
+}
+
+const meter = new THREE.Group(); scene.add(meter);   // rotates about x
+const bodyMat = mat(0x8fb3c9, { transparent: true, opacity: 0.55 });
+const plateMat = mat(0x6f8fa3);
+Promise.all([
+  load("body", bodyMat).then((m) => (parts.body = m)),
+  load("motor_plate", plateMat),
+  load("rim", mat(0xd0d0c8)),
+  load("tt_motor", mat(0xf9d11a)),
+  load("tt_shaft", mat(0xededE5), meter),
+]).then(() => { applyCut(); });
+
+let rollerMesh = null;
+const rollerMat = mat(0xe0702e);
+async function loadRoller(k) {
+  if (rollerMesh) { meter.remove(rollerMesh); rollerMesh.geometry.dispose(); }
+  rollerMesh = await load("roller_" + k, rollerMat, meter);
+}
+$("roller").onchange = (e) => loadRoller(e.target.value);
+loadRoller($("roller").value);
+
+function applyCut() {
+  const planes = $("cut").checked ? [clip] : [];
+  bodyMat.clippingPlanes = planes; plateMat.clippingPlanes = planes;
+  bodyMat.needsUpdate = plateMat.needsUpdate = true;
+  if (parts.body) parts.body.visible = $("showBody").checked;
+}
+$("cut").onchange = applyCut; $("showBody").onchange = applyCut;
+
+// ---------- speed model ----------
+function rpmFor(duty) {
+  const d = Math.abs(duty), dead = +$("dead").value, max = +$("rpmMax").value;
+  if (d <= dead) return 0;
+  return Math.sign(duty) * (d - dead) / (100 - dead) * max;
+}
+
+let angle = 0, revs = 0, last = performance.now();
+$("resetRevs").onclick = () => (revs = 0);
+
+function resize() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(canvas.parentElement);
+
+function frame(now) {
+  const dt = (now - last) / 1000; last = now;
+  // follow the duty the ESP32 reports; without a connection, simulate the slider
+  const duty = writer ? actualDuty : target;
+  const rpm = rpmFor(duty);
+  angle += rpm / 60 * 2 * Math.PI * dt;
+  revs += Math.abs(rpm) / 60 * dt;
+  meter.rotation.x = -angle;           // + = top of the roller moves forward (+y), as set_roller() in build_ovt.py
+  $("rpm").textContent = Math.abs(rpm).toFixed(1) + " rpm";
+  $("gmin").textContent = (Math.abs(rpm) * G_PER_REV[$("roller").value]).toFixed(1) + " g/min";
+  $("revs").textContent = revs.toFixed(1);
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
